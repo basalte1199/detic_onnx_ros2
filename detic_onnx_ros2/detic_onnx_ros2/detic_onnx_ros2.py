@@ -26,11 +26,15 @@ from detic_onnx_ros2.color import random_color, color_brightness
 import copy
 import time
 
+from realsense2_camera_msgs.msg import RGBD
+
 
 class DeticNode(Node):
     def __init__(self):
         super().__init__("detic_node")
         self.set_ros2param()
+        self.declare_parameter("detection_width", 800)
+        self.detection_width: int = self.get_parameter("detection_width").value
         self.weight_and_model = self.download_onnx(
             "Detic_C2_SwinB_896_4x_IN-21K+COCO_lvis_op16.onnx"
         )
@@ -50,8 +54,8 @@ class DeticNode(Node):
             SegmentationInfo, self.get_name() + "/detic_result/segmentation_info", 10
         )
         self.subscription = self.create_subscription(
-            Image,
-            "image_raw",
+            RGBD,
+            "/camera/camera/rgbd",
             self.image_callback,
             10,
         )
@@ -254,7 +258,7 @@ class DeticNode(Node):
         return image
 
     def image_callback(self, msg):
-        input_image = self.bridge.imgmsg_to_cv2(msg)
+        input_image = self.bridge.imgmsg_to_cv2(msg.rgb,"bgr8")
 
         vocabulary = "lvis"
 
@@ -313,7 +317,7 @@ class DeticNode(Node):
         segmentation_info.header = msg.header
         segmentation_info.segmentations = segmentations
         self.segmentation_publisher.publish(segmentation_info)
-        self.image_publisher.publish(self.bridge.cv2_to_imgmsg(visualization, "bgr8"))
+        self.publisher.publish(self.bridge.cv2_to_imgmsg(visualization, "bgr8"))
 
     def set_ros2param(self):
         self.declare_parameter('device',"gpu")
