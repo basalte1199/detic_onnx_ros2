@@ -14,9 +14,10 @@ find_package(sensor_msgs REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/PointOnImage.msg"
   "msg/Polygon.msg"
-  "msg/BoundingBox.msg"
   "msg/Segmentation.msg"
   "msg/SegmentationInfo.msg"
+  "msg/BoundingBox.msg"
+  "msg/BoundingBoxRgbd.msg"
   DEPENDENCIES std_msgs sensor_msgs
 )
 
