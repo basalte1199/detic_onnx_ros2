@@ -16,7 +16,6 @@ from detic_onnx_ros2_msg.msg import (
     Segmentation,
     Polygon,
     PointOnImage,
-    BoundingBoxRgbd,
 )
 
 from cv_bridge import CvBridge
@@ -28,6 +27,13 @@ import copy
 import time
 
 from realsense2_camera_msgs.msg import RGBD
+
+import torch
+import clip
+
+from PIL import Image as PILImage
+
+
 
 
 class DeticNode(Node):
@@ -54,9 +60,6 @@ class DeticNode(Node):
         self.segmentation_publisher = self.create_publisher(
             SegmentationInfo, self.get_name() + "/detic_result/segmentation_info", 10
         )
-        self.segmentation_rgbd_publisher = self.create_publisher(
-            BoundingBoxRgbd, self.get_name() + "/detic_result/bounding_box_rgbd", 10
-        )
         self.subscription = self.create_subscription(
             RGBD,
             "/camera/camera/rgbd",
@@ -64,6 +67,9 @@ class DeticNode(Node):
             10,
         )
         self.bridge = CvBridge()
+
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model, self.prepro = clip.load("ViT-B/32", device=self.device)
 
     def download_onnx(
         self,
@@ -138,6 +144,7 @@ class DeticNode(Node):
             color = assigned_colors[i]
             color = (int(color[0]), int(color[1]), int(color[2]))
             image_b = image.copy()
+            image_f = image.copy()
 
             # draw box
             x0, y0, x1, y1 = boxes[i]
@@ -154,10 +161,6 @@ class DeticNode(Node):
             segmentation.bounding_box.xmax = int(max(x0, x1))
             segmentation.bounding_box.ymin = int(min(y0, y1))
             segmentation.bounding_box.ymax = int(max(y0, y1))
-
-            bounding_box = [x0, y0, x1, y1]
-
-            object_xy = [(x0 + x1) // 2,(y0 + y1) // 2]
 
             # draw segment
             polygons = self.mask_to_polygons(masks[i])
@@ -218,7 +221,24 @@ class DeticNode(Node):
                 lineType=cv2.LINE_AA,
             )
 
-        return image, segmentations, text, bounding_box, object_xy
+            img_clip = image_f[y0 : y1, x0 : x1]
+            clip_image = self.prepro(PILImage.fromarray(img_clip)).unsqueeze(0).to(self.device)
+            clip_text = clip.tokenize(["Please pick up the candy box on the living room table next to the TV.", "candy box", "living room table"]).to(self.device)
+
+            with torch.no_grad():
+                # 画像とテキストのエンコード
+                image_features = self.model.encode_image(clip_image)
+                text_features = self.model.encode_text(clip_text)
+
+                # 推論
+                logits_per_image, logits_per_text = self.model(clip_image, clip_text)
+                probs = logits_per_image.softmax(dim=-1).cpu().numpy()
+
+            # 類似率の出力
+            print(text,"Label probs:", probs)
+
+
+        return image, segmentations
 
     def mask_to_polygons(self, mask: np.ndarray) -> List[Any]:
         # cv2.RETR_CCOMP flag retrieves all the contours and arranges them to a 2-level
@@ -314,30 +334,18 @@ class DeticNode(Node):
             "classes": draw_classes,
             "masks": draw_mask,
         }
-        visualization, segmentations, text,bounding_box ,object_xy = self.draw_predictions(
+        visualization, segmentations = self.draw_predictions(
             cv2.cvtColor(
                 cv2.resize(input_image, (input_width, input_height)), cv2.COLOR_BGR2RGB
             ),
             detection_results,
             "lvis",
         )
-        print(text)
         segmentation_info = SegmentationInfo()
         segmentation_info.header = msg.header
         segmentation_info.segmentations = segmentations
         self.segmentation_publisher.publish(segmentation_info)
         self.publisher.publish(self.bridge.cv2_to_imgmsg(visualization, "bgr8"))
-
-        if "box" in text or "yogurt" in text or "eraser" in text:
-            bounding_box_rgbd = BoundingBoxRgbd()
-            bounding_box_rgbd.x = int(object_xy[0])
-            bounding_box_rgbd.y = int(object_xy[1])
-            depth = self.bridge.imgmsg_to_cv2(msg.depth, "passthrough")
-            if int(object_xy[0]) >= 480:
-                object_xy[0] = 479
-            print(depth[int(object_xy[0]),int(object_xy[1])])
-            bounding_box_rgbd.z = depth[int(object_xy[0]),int(object_xy[1])] / 1000
-            self.segmentation_rgbd_publisher.publish(bounding_box_rgbd)
 
     def set_ros2param(self):
         self.declare_parameter('device',"gpu")
