@@ -33,6 +33,10 @@ import clip
 
 from PIL import Image as PILImage
 
+from tf2_ros import TransformBroadcaster
+from geometry_msgs.msg import TransformStamped
+
+
 
 
 
@@ -62,7 +66,7 @@ class DeticNode(Node):
         )
         self.subscription = self.create_subscription(
             RGBD,
-            "/camera/camera/rgbd",
+            "/camera/rgbd",
             self.image_callback,
             10,
         )
@@ -70,6 +74,13 @@ class DeticNode(Node):
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model, self.prepro = clip.load("ViT-B/32", device=self.device)
+
+        #TF publisher
+        self.broadcaster = TransformBroadcaster(self)
+        self.TFpublisher = self.create_publisher(
+            TransformStamped,
+            '/object_pose',
+            10)
 
     def download_onnx(
         self,
@@ -223,7 +234,7 @@ class DeticNode(Node):
 
             img_clip = image_f[y0 : y1, x0 : x1]
             clip_image = self.prepro(PILImage.fromarray(img_clip)).unsqueeze(0).to(self.device)
-            clip_text = clip.tokenize(["Please pick up the candy box on the living room table next to the TV.", "candy box", "living room table"]).to(self.device)
+            clip_text = clip.tokenize([ "candy box", "living room table"]).to(self.device)
 
             with torch.no_grad():
                 # 画像とテキストのエンコード
@@ -236,6 +247,30 @@ class DeticNode(Node):
 
             # 類似率の出力
             print(text,"Label probs:", probs)
+
+            cx,cy = (x0+x1)/2,(y0+y1)/2
+            distance = self.depth_image[int(cy)][int(cx)]
+
+            px, py, fx, fy = self.k[2], self.k[5], self.k[0], self.k[4]
+            nearest_object_x = distance/1000 * (cx - px) / fx
+            nearest_object_y = distance/1000 * (cy - py) / fy
+            nearest_object_z = distance/1000
+
+
+            now = self.get_clock().now().to_msg()
+            Trans = TransformStamped()
+            Trans.header.stamp = now
+            Trans.header.frame_id = "camera_link"
+            Trans.child_frame_id = str(probs[0][0])
+            Trans.transform.translation.x = float(nearest_object_z)
+            Trans.transform.translation.y = float(-nearest_object_x)
+            Trans.transform.translation.z = float(-nearest_object_y)
+            Trans.transform.rotation.x = 0.0
+            Trans.transform.rotation.y = 0.0
+            Trans.transform.rotation.z = 0.0
+            Trans.transform.rotation.w = 1.0
+            self.TFpublisher.publish(Trans)
+            self.broadcaster.sendTransform(Trans)
 
 
         return image, segmentations
@@ -287,6 +322,8 @@ class DeticNode(Node):
 
     def image_callback(self, msg):
         input_image = self.bridge.imgmsg_to_cv2(msg.rgb,"bgr8")
+        self.depth_image = self.bridge.imgmsg_to_cv2(msg.depth,"passthrough")
+        self.k = msg.depth_camera_info.k
 
         vocabulary = "lvis"
 
