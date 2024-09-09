@@ -35,6 +35,7 @@ from PIL import Image as PILImage
 
 from tf2_ros import TransformBroadcaster
 from geometry_msgs.msg import TransformStamped
+import pyrealsense2 as rs
 
 
 
@@ -81,6 +82,8 @@ class DeticNode(Node):
             TransformStamped,
             '/object_pose',
             10)
+        
+        
 
     def download_onnx(
         self,
@@ -234,7 +237,7 @@ class DeticNode(Node):
 
             img_clip = image_f[y0 : y1, x0 : x1]
             clip_image = self.prepro(PILImage.fromarray(img_clip)).unsqueeze(0).to(self.device)
-            clip_text = clip.tokenize([ "candy box", "living room table"]).to(self.device)
+            clip_text = clip.tokenize([ "candy box", "living room table","bed"]).to(self.device)
 
             with torch.no_grad():
                 # 画像とテキストのエンコード
@@ -247,7 +250,7 @@ class DeticNode(Node):
 
             # 類似率の出力
             print(text,"Label probs:", probs)
-
+            
             cx,cy = (x0+x1)/2,(y0+y1)/2
             distance = self.depth_image[int(cy)][int(cx)]
 
@@ -255,13 +258,17 @@ class DeticNode(Node):
             nearest_object_x = distance/1000 * (cx - px) / fx
             nearest_object_y = distance/1000 * (cy - py) / fy
             nearest_object_z = distance/1000
-
-
+            #print(text + "_"+str(probs[0][0])+ "_"+str(probs[0][1]))
+            """
+            cx,cy = (x0+x1)/2,(y0+y1)/2
+            distance = self.depth_image[int(cy)][int(cx)]
+            nearest_object_y,nearest_object_z,nearest_object_x = rs.rs2_deproject_pixel_to_point(self.depth_intrinsics, [cx, cy], distance)
+            """
             now = self.get_clock().now().to_msg()
             Trans = TransformStamped()
             Trans.header.stamp = now
-            Trans.header.frame_id = "camera_link"
-            Trans.child_frame_id = str(probs[0][0])
+            Trans.header.frame_id = "odom"
+            Trans.child_frame_id = text
             Trans.transform.translation.x = float(nearest_object_z)
             Trans.transform.translation.y = float(-nearest_object_x)
             Trans.transform.translation.z = float(-nearest_object_y)
@@ -324,6 +331,7 @@ class DeticNode(Node):
         input_image = self.bridge.imgmsg_to_cv2(msg.rgb,"bgr8")
         self.depth_image = self.bridge.imgmsg_to_cv2(msg.depth,"passthrough")
         self.k = msg.depth_camera_info.k
+        
 
         vocabulary = "lvis"
 
